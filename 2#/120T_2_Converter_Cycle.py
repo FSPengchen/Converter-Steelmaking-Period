@@ -1,10 +1,61 @@
-# 2023.1.28     增加副枪是否使用状态
-# 2023.2.09     增加冶炼周期,吹炼时间,在3-6分钟内，停氧并且转炉倾动角度超过正70°，判为双渣。
-# 2023.04.01    修改记录   由 start_time_list  改为 STOP_start_time_list
-# 2023.04.14    转炉钢水副枪测温
-# 2023.04.18    压枪时间
-# 2023.04.17    副枪含碳量
-# 2023.04.24    补炉信息
+"""
+2023.01.16:
+工艺变更:增加吹氩周期
+
+2023.2.6
+工艺变更:
+根据现场要求，进行修改120吨2号转炉，煤气回收时间规则
+由吹炼最后一笔数据，改为 出钢状态第一笔数据。并且PLC端也进行同时改动。
+
+2023.2.16
+规则变更:增加的单双渣工艺规则判断
+
+2023.2.27
+规则变更:1号转炉转换刘一接口
+
+2023.03.23：
+工艺变更:修改引用重量及温度数据。
+
+2023.04.01：
+工艺变更:修改测温温度判断规则，在副枪与倾倒测温后到优先。
+
+2023.04.04：
+工艺变更:修改引用温度数据,副枪优先,增加副枪测温温度。
+
+2023.04.14:
+工艺变更:增加压枪时间，具体的规则，供氧状态停止前 2分钟内，最低枪位持续时间。（具体枪位值） 取最低值，反15 ,当有两个最小值时，取后面的值和时间。
+
+2023.04.24：
+工艺变更:增加补炉信息。
+
+2023.05.04
+工艺变更:装置温度1，吹氩温度，炉次开始完成后 15分钟读取。冶炼周期增加吹氩温度，炉次结束后15分钟获取数据.
+
+2023.05.08
+工艺变更:增加压枪时间，具体的规则，供氧状态停止前 2分钟内，最低枪位持续时间。（具体枪位值） 取最低值，反15 ,当有两个最小值时，取"前"面的值和时间。
+
+2023.05.10
+工艺变更:供氧状态来，10分钟之后，点吹炼结束（1》0） 时间，前1分钟，找来看枪位最低点，一直持续的时间。
+
+2023.06.05
+PLC程序变更:吹氩的时间取最大值的范围缩减。
+
+2023.06.06
+终点关氧前1分钟，1.55米（7845）以下停留时间
+
+2023.06.08
+
+一段底吹时间
+相当于  120吨2号转炉钢包出钢位底吹操作时间
+mw128
+二段底吹
+就是120吨2号转炉钢包氩站二段底吹时间
+mw138
+三段底吹
+就是120吨2号转炉钢包氩站三段底吹时间
+mw140
+
+"""
 
 
 import time
@@ -206,8 +257,12 @@ smeltv1 = {
     'desulfurization_lance_time':"0",
     'TSC_Carbon_Content':"0",
     'repair_converter':"0",
+    'desulfurization_lance_min_position':"0",
+    'desulfurization_lance_begin':"0",
+    'desulfurization_lance_end':"0",
 
 }
+
 
 start_time_list = []  # 存储每炉开始时间数组
 end_time_list = []  # 存储每炉结束时间数组
@@ -291,6 +346,26 @@ def sql_end_time_value(i, eid):
     else:
         sql_values = '0'
     return sql_values
+
+
+# 2023.05.04 炉次结束时间加15分钟，获取氩后温度
+def sql_end_time_temperature_after_argon(i, eid):
+    sql = "SELECT ts ,v FROM power.collect_steelmaking WHERE ts >= '" + \
+          str(start_time_list[i]) + "' and ts < '" + str(Date_Time_Arithmetic.Addmin_dateTime_str(str(end_time_list[i]),15)) + "' AND  eid='" + eid + "'  ORDER BY ts desc LIMIT 1;"
+    # print('采集炉号SQL',sql)
+    try:
+        sql_values = client.execute(sql)
+    except Exception as e:
+        print(e)
+        sql_values = '0'
+
+    # print('采集炉号返回值', sql_values)
+    if sql_values:
+        sql_values = sql_values[0][1]
+    else:
+        sql_values = '0'
+    return sql_values
+
 
 
 # 炉次结束时间到下一炉时间内，其他状态的计时时间
@@ -392,6 +467,28 @@ def sql_gasrecovery_time(i, eid1, eid2, eid3):
             sql_values = 0
 
     return sql_values
+
+# 递归查看压枪时间
+def desulfurization_lance_time(start_time,end_time):
+    # # 在这里增加终点关氧前1分钟，1.55米（7845）以下停留时间
+    # # 第一次供氧状态=1  大于10分钟 取值，  小于10分钟为0   供氧结束前 1分半的 枪位低于 1550  的有效时间总和,  到供氧结束时间或者 大于1550。   只记录一次时间
+    sql = "SELECT ts, v FROM power.collect_steelmaking WHERE ts >= '" + str(start_time) + "' AND ts <= '" + str(end_time) + "' AND eid = '0082c988' AND v = 0 ORDER BY ts desc LIMIT 1"
+    print('在供氧状态内是否有第二次吹氧', sql)
+    sql_values = client.execute(sql)
+    print('获取的值', sql_values)
+    if sql_values:
+        print(sql_values[0][0],type(sql_values[0][0]))
+        desulfurization_lance_time(Date_Time_Arithmetic.Addsec_dateTime_str(str(sql_values[0][0]), 1),end_time)
+
+    else:
+        sql = "SELECT ts, v FROM power.collect_steelmaking WHERE ts >= '" + str(
+            Date_Time_Arithmetic.Subsec_dateTime_str(str(end_time), 90)) + "' AND ts <= '" + str(end_time) + "' AND eid = 'b5ad8b64' AND v <=1550 ORDER BY ts asc"
+        print('供氧结束时间前90秒，枪距液面小于1550的值', sql)
+        sql_values = client.execute(sql)
+        print('小于值的数量，即为多少秒', len(sql_values) / 60)
+        smeltv1['desulfurization_lance_time'] = len(sql_values) / 60
+        print('压枪时间', smeltv1['desulfurization_lance_time'])
+
 
 
 def cycle_interval(start_time, end_time, result):
@@ -704,38 +801,87 @@ def cycle_processing(start_time, end_time):
         smeltv1['supplyOxy_end'] = sql_end_time(i, '0082c988')
         print('供氧状态结束时间', smeltv1['supplyOxy_end'])
 
+        # 2023.05.10 压枪时间
 
-        if smeltv1['supplyOxy_end'] != None and smeltv1['supplyOxy_end'] != 'None': # 值越大 枪位越高
-            # 增加压枪时间，具体的规则，供氧状态停止前  2分钟内，最低枪位持续时间。（具体枪位值）  取最低值，反15 ,当有两个最小值时，取后面的值和时间  用chlickhouse 查询 ,炼钢转炉氧枪在停止供氧状态前的2分钟内,获取氧枪最小值和最后的时间
-            # sql = "SELECT MIN(v) , argMin(ts,v) FROM power.collect_steelmaking WHERE eid ='9cbbc927' and ts  BETWEEN '2023-04-14 01:55:30' AND '2023-04-14 01:57:30' "
+        if smeltv1['supplyOxy_begin'] != None and smeltv1['supplyOxy_begin'] != 'None' and smeltv1['supplyOxy_end'] != None and smeltv1['supplyOxy_end'] != 'None' and (smeltv1['supplyOxy_end'] - smeltv1['supplyOxy_begin']).seconds >= 600.0:  # 办法有供氧状态开始时间
+            # 递归读取压枪时间
+            desulfurization_lance_time(smeltv1['supplyOxy_begin'], smeltv1['supplyOxy_end'])
 
-            sql = "SELECT min(v) as min_v,ts as last_ts FROM power.collect_steelmaking WHERE eid = '9cbbc927' AND ts > toDateTime('"+str(smeltv1['supplyOxy_end'])+"') - INTERVAL 2 MINUTE and ts < '"+str(smeltv1['supplyOxy_end'])+"' AND v IS NOT NULL GROUP BY ts ORDER BY ts DESC LIMIT 1"
-            print('SQL增加压枪时间，具体的规则，供氧状态停止前  2分钟内，最低枪位持续时间。（具体枪位值）  取最低值，反15 ,当有两个最小值时，取后面的值和时间 ',sql)
-            sql_values = client.execute(sql)
-            if sql_values:
-                # print('压枪最小值', sql_values)
-                sql_v = sql_values[0][0]
-                sql_ts = sql_values[0][1]
-                print('压枪最小值和时间',sql_v,sql_ts)
+            # 供氧状态来，10分钟之后，点吹炼结束（1》0） 时间，前1分钟，找来看枪位最低点，一直持续的时间。 9cbbc927 枪位   0082c988供氧状态
+            # 获取供氧状态10分钟之后到供氧结束时间之间的顺序状态值
+            # sql = "SELECT ts,v FROM power.collect_steelmaking WHERE ts >= '"+str(Date_Time_Arithmetic.Addmin_dateTime_str(str(smeltv1['supplyOxy_begin']),10))+"' and ts <= '"+str(smeltv1['supplyOxy_end'])+"' AND  eid='0082c988'  ORDER BY ts asc"
+            #
+            # print('压枪时间的sql',sql)
+            # sql_values = client.execute(sql)
+            # first_stop_supplyOxy_time = None
+            # if sql_values:
+            #     Num_v = 0
+            #     # print(sql_values)
+            #     for v in sql_values:
+            #         Num_v += 1
+            #         if int(v[1]) == 0:
+            #             first_stop_supplyOxy_time = v[0]
+            #             print('判断供氧状态中有0，获取第一次停氧时间',first_stop_supplyOxy_time)
+            #             break
+            #     else:
+            #         first_stop_supplyOxy_time = smeltv1['supplyOxy_end']
+            #         print('判断供氧状态中没有0，获取第一次停氧时间', first_stop_supplyOxy_time)
+            #
+            #     sql = "SELECT MIN(v), MIN(ts) AS start_time, MAX(ts) AS end_time FROM power.collect_steelmaking WHERE ts >= '"+str(Date_Time_Arithmetic.Submin_dateTime_str(str(first_stop_supplyOxy_time),1))+"' AND ts <= '"+str(first_stop_supplyOxy_time)+"' AND eid='9cbbc927' AND v = (SELECT MIN(v) FROM power.collect_steelmaking WHERE ts >= '"+str(Date_Time_Arithmetic.Submin_dateTime_str(str(first_stop_supplyOxy_time),1))+"' AND ts <= '"+str(first_stop_supplyOxy_time)+"' AND eid='9cbbc927')"
+            #     print('这条查询语句会返回最小值、最小值开始时间和最小值结束时间三个结果。其中，最小值是通过子查询找到的，而最小值开始时间和结束时间则是在主查询中通过 MIN 和 MAX 聚合函数计算得出的',sql)
+            #     sql_values = client.execute(sql)
+            #     if sql_values:
+            #         print('两个时间',sql_values)
+            #         smeltv1['desulfurization_lance_min_position'] = float(sql_values[0][0])
+            #         smeltv1['desulfurization_lance_begin'] = str(sql_values[0][1])
+            #         smeltv1['desulfurization_lance_end'] = str(sql_values[0][2])
+            #         smeltv1['desulfurization_lance_time'] = (sql_values[0][2] - sql_values[0][1]).total_seconds() / 60
+            #
+            #     else:
+            #         smeltv1['desulfurization_lance_time'] = '0'
+            # else:
+            #     smeltv1['desulfurization_lance_time'] = '0'
 
-                sql = "SELECT ts FROM power.collect_steelmaking WHERE ts >= '"+str(sql_ts)+"' and ts < '"+str(smeltv1['supplyOxy_end'])+"' AND  eid='9cbbc927' and v <= "+str(float(sql_v)+15)+" ORDER BY ts desc LIMIT 1"
-                sql_values_add = client.execute(sql)
-                print('获取小于+15值后枪位的最后时间有没有', sql_values_add)
-                if sql_values_add:
-                    # print('压枪最小值', sql_values)
-                    sql_ts_add = sql_values_add[0][0]
-                    print('获取小于+15值后枪位的最后时间',sql_ts_add,type(sql_ts_add))
-                    print(sql_ts,type(sql_ts))
+        else:
+            smeltv1['desulfurization_lance_time'] = '0'
+        print('压枪时间', smeltv1['desulfurization_lance_time'])
+        print('压枪时间枪位最小值', smeltv1['desulfurization_lance_min_position'])
+        print('压枪时间枪位最小值开始时间', smeltv1['desulfurization_lance_begin'])
+        print('压枪时间枪位最小值结束时间', smeltv1['desulfurization_lance_end'])
 
-                    smeltv1['desulfurization_lance_time'] = float(int(str(
-                        Date_Time_Arithmetic.Endday_sub_Startday_sec(str(sql_ts),
-                                                                     str(sql_ts_add)))) / 60)
-                    print('desulfurization_lance_time:', smeltv1['desulfurization_lance_time'])
 
-                else:
-                    smeltv1['desulfurization_lance_time'] = '0'
-            else:
-                smeltv1['desulfurization_lance_time'] = '0'
+
+        # if smeltv1['supplyOxy_end'] != None and smeltv1['supplyOxy_end'] != 'None': # 值越大 枪位越高
+        #     # 增加压枪时间，具体的规则，供氧状态停止前  2分钟内，最低枪位持续时间。（具体枪位值）  取最低值，反15 ,当有两个最小值时，取后面的值和时间  用chlickhouse 查询 ,炼钢转炉氧枪在停止供氧状态前的2分钟内,获取氧枪最小值和最后的时间
+        #     # sql = "SELECT MIN(v) , argMin(ts,v) FROM power.collect_steelmaking WHERE eid ='9cbbc927' and ts  BETWEEN '2023-04-14 01:55:30' AND '2023-04-14 01:57:30' "
+        #
+        #     sql = "SELECT min(v) as min_v,ts as last_ts FROM power.collect_steelmaking WHERE eid = '9cbbc927' AND ts > toDateTime('"+str(smeltv1['supplyOxy_end'])+"') - INTERVAL 2 MINUTE and ts < '"+str(smeltv1['supplyOxy_end'])+"' AND v IS NOT NULL GROUP BY ts ORDER BY ts ASC LIMIT 1"
+        #     print('SQL增加压枪时间，具体的规则，供氧状态停止前  2分钟内，最低枪位持续时间。（具体枪位值）  取最低值，反15 ,当有两个最小值时，取后面的值和时间 ',sql)
+        #     sql_values = client.execute(sql)
+        #     if sql_values:
+        #         # print('压枪最小值', sql_values)
+        #         sql_v = sql_values[0][0]
+        #         sql_ts = sql_values[0][1]
+        #         print('压枪最小值和时间',sql_v,sql_ts)
+        #
+        #         sql = "SELECT ts FROM power.collect_steelmaking WHERE ts >= '"+str(sql_ts)+"' and ts < '"+str(smeltv1['supplyOxy_end'])+"' AND  eid='9cbbc927' and v <= "+str(float(sql_v)+15)+" ORDER BY ts desc LIMIT 1"
+        #         sql_values_add = client.execute(sql)
+        #         print('获取小于+15值后枪位的最后时间有没有', sql_values_add)
+        #         if sql_values_add:
+        #             # print('压枪最小值', sql_values)
+        #             sql_ts_add = sql_values_add[0][0]
+        #             print('获取小于+15值后枪位的最后时间',sql_ts_add,type(sql_ts_add))
+        #             print(sql_ts,type(sql_ts))
+        #
+        #             smeltv1['desulfurization_lance_time'] = float(int(str(
+        #                 Date_Time_Arithmetic.Endday_sub_Startday_sec(str(sql_ts),
+        #                                                              str(sql_ts_add)))) / 60)
+        #             print('desulfurization_lance_time:', smeltv1['desulfurization_lance_time'])
+        #
+        #         else:
+        #             smeltv1['desulfurization_lance_time'] = '0'
+        #     else:
+        #         smeltv1['desulfurization_lance_time'] = '0'
 
 
         smeltv1['splashSlag_begin'] = sql_start_time(i, '5448d76f')
@@ -807,7 +953,7 @@ def cycle_processing(start_time, end_time):
         print('测温时间', smeltv1['tempMeasure'])
 
         beforSteelTemp1 = float(sql_end_time_value(i, 'af2d569c'))
-        beforSteelTemp2 = float(sql_end_time_value(i, 'cf0d672c'))
+        beforSteelTemp2 = float(sql_end_time_temperature_after_argon(i, 'cf0d672c'))
         smeltv1['beforSteelTemp1'] = round(beforSteelTemp1, 2)
         smeltv1['beforSteelTemp2'] = round(beforSteelTemp2, 2)
         print('转炉钢水自动测温1', smeltv1['beforSteelTemp1'])
@@ -1025,7 +1171,6 @@ def cycle_processing(start_time, end_time):
         print('氧枪氧气总支管平均压力', smeltv1['OxylanceBranchMainPressure'])
 
 
-
         # sql = "REPLACE INTO smeltinfo (smeltinfo.inDate,smeltinfo.heatNo) VALUES('" + smeltv1['inDate'] + "','" + str(smeltv1['heatNo']) + "')"
 
 
@@ -1039,7 +1184,7 @@ def wirte_sql():
         for i in smeltv1.values():
             # print(i)
             sql_value = sql_value + "'" + str(i) + "',"
-        sql = "replace into smeltinfo (" + sql_str[:-1] + ")value(" + sql_value[:-1] + ")"
+        sql = "replace into smeltinfo1 (" + sql_str[:-1] + ")value(" + sql_value[:-1] + ")"
         print(sql)
 
         cur.execute(sql)

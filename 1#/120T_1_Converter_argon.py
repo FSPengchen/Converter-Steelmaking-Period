@@ -81,7 +81,7 @@ def sql_end_time(day,heatNo,eid):
 
 # 吹氩炉次结束时间
 def sql_max_value(start_time,end_time,eid):
-    sql = "SELECT  v FROM power.collect_steelmaking  WHERE  ts >= '" + start_time + "' and ts <= '" + end_time + "' and  eid='" + eid + "'  ORDER BY ts ;"
+    sql = "SELECT  v FROM power.collect_steelmaking  WHERE  ts > '" + start_time + "' and ts < '" + end_time + "' and  eid='" + eid + "'  ORDER BY ts ;"
     # print(sql)
     sql_values = client.execute(sql)
     print('范围取值',sql_values)
@@ -115,7 +115,10 @@ while flag:
     sql = "SELECT DISTINCT v FROM power.collect_steelmaking  WHERE ts >= '" + date_today + "' AND  eid='bhdp82cc'  ORDER BY ts asc;"
     print(sql)
 
-    sql_values = client.execute(sql)
+    try:
+        sql_values = client.execute(sql)
+    except Exception as e:
+        print(e)
     if sql_values:
         # 获取元组
         print(len(sql_values))
